@@ -265,4 +265,45 @@ curl http://localhost:8000/v1/responses \
 
 [![Star History Chart](https://api.star-history.com/chart?repos=basketikun/chatgpt2api&type=date&legend=top-left)](https://www.star-history.com/?repos=basketikun%2Fchatgpt2api&type=date&legend=top-left)
 
-##test
+## test
+• 一句话说，这个项目的原理不是“调用官方 OpenAI API”，而是“拿 ChatGPT 网页端的 access_token，模拟浏览器去请
+  求 chatgpt.com 的内部接口，再把结果包装成 OpenAI 风格 API”。
+
+  从你这个容器里的代码看，核心链路是这样的：
+
+  1. Docker 里跑的是一个 FastAPI 服务，入口很简单，在 app/main.py:6。
+  2. 它对外暴露 /v1/images/generations、/v1/images/edits、/v1/chat/completions、/v1/responses 这些接口，在
+     app/services/api.py:348。
+  3. 但这里要注意，这个版本实际上主要只做“图片生成/编辑”。/v1/chat/completions 也只接受图片生成类请求，普通
+     文本对话会直接拒绝；/v1/models 也只返回 gpt-image-1/2，代码在 app/services/chatgpt_service.py:155。
+  4. 真正的上游不是 api.openai.com，而是 https://chatgpt.com/backend-api/...。它会先用导入的 access_token
+     去查账号信息、套餐类型、图片额度，这部分在 app/services/account_service.py:409。
+  5. 发图请求时，它用 curl-cffi 模拟 Edge/Chrome 浏览器，带上 user-agent、sec-ch-ua、oai-device-id 这些头，
+     再访问首页拿 oai-did，然后打 sentinel/chat-requirements 取 chat-requirements token，如果上游要求 PoW，
+     还会本地算 proof token。这部分在 app/services/image_service.py:100、app/services/
+     image_service.py:196、app/services/proof_of_work.py:391。
+  6. 然后它直接 POST 到 /backend-api/conversation，走网页端那套 SSE 流，解析返回里的 conversation_id 和图片
+     文件 ID，再去拿下载链接，把图片下载回来，最后转成 b64_json 或保存到本地 /images/... 返回 URL，这部分在
+     app/services/image_service.py:399、app/services/image_service.py:479、app/services/
+     image_service.py:661。
+  7. 如果是图片编辑，它会先调用 ChatGPT 的文件上传接口 /backend-api/files，上传原图后再把
+     sediment://file_id 当附件塞进 conversation 请求里，在 app/services/image_service.py:227 和 app/servic
+     es/image_service.py:765。
+
+  再直白一点，它本质上是：
+
+  - 你给它一个 ChatGPT 网页登录态的 access_token
+  - 它伪装成浏览器去调用 ChatGPT 网页内部接口
+  - 它把 ChatGPT 网页返回的结果翻译成 OpenAI API 兼容格式
+
+  当前这个容器里我还看到两点：
+
+  - 项目代码主目录就是 app/，并带了一个打包好的前端 web_dist/，所以它自带 Web 管理界面。
+  - 目前没有发现 app/data/accounts.json，说明这个实例现在大概率还没导入实际的 ChatGPT 账号 token；配置读取
+    逻辑在 app/services/config.py:57。
+
+  结论就是：这是一个“ChatGPT 网页端反代/封装器”，不是官方 API 网关，所以它依赖私有接口、浏览器指纹和 PoW 逻
+  辑，ChatGPT 网页一改，它就可能失效。
+
+  如果你要，我下一步可以继续帮你画一张“从客户端请求到 ChatGPT 返回图片”的时序图。
+
